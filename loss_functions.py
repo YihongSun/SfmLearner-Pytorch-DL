@@ -55,6 +55,7 @@ def photometric_reconstruction_loss(tgt_img, ref_imgs, intrinsics,
         total_loss += loss
         warped_results.append(warped)
         diff_results.append(diff)
+    assert False
     return total_loss, warped_results, diff_results
 
 

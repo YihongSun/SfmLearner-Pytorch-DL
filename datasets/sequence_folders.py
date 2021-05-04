@@ -62,3 +62,69 @@ class SequenceFolder(data.Dataset):
 
     def __len__(self):
         return len(self.samples)
+
+
+class SequenceFolderFlow(data.Dataset):
+    """A sequence data loader where the files are arranged in this way:
+        root/scene_1/0000000.jpg
+        root/scene_1/0000001.jpg
+        ..
+        root/scene_1/cam.txt
+        root/scene_2/0000000.jpg
+        .
+
+        transform functions must take in a list a images and a numpy array (usually intrinsics matrix)
+    """
+
+    def __init__(self, root, flow_root, seed=None, train=True, sequence_length=3, transform=None, target_transform=None):
+        assert sequence_length == 3         #flow is only calculated between frames
+
+        np.random.seed(seed)
+        random.seed(seed)
+        self.flow_root = Path(flow_root)
+        self.root = Path(root)
+        scene_list_path = self.root/'train.txt' if train else self.root/'val.txt'
+        self.scenes = [self.root/folder[:-1] for folder in open(scene_list_path)]
+        self.flow_scenes = [self.flow_root/folder[:-1] for folder in open(scene_list_path)]
+        self.transform = transform
+        self.crawl_folders(sequence_length)
+
+    def crawl_folders(self, sequence_length):
+        sequence_set = []
+        demi_length = (sequence_length-1)//2
+        shifts = list(range(-demi_length, demi_length + 1))
+        shifts.pop(demi_length)
+        for scene, flow_scene in zip(self.scenes, self.flow_scenes):
+            intrinsics = np.genfromtxt(scene/'cam.txt').astype(np.float32).reshape((3, 3))
+            imgs = sorted(scene.files('*.jpg'))
+            if len(imgs) < sequence_length:
+                continue
+            for i in range(demi_length, len(imgs)-demi_length):
+                sample = {'intrinsics': intrinsics, 'tgt': imgs[i], 'ref_imgs': [], 'flows': []}
+                for j in shifts:
+                    sample['ref_imgs'].append(imgs[i+j])
+                    img_name = imgs[i+j].split('/')[-1].split('.')[0]
+                    if j < 0:
+                        sample['flows'].append(flow_scene/'{}.npy'.format(img_name))
+                    if j > 0:
+                        sample['flows'].append(flow_scene/'{}_r.npy'.format(img_name))
+
+                sequence_set.append(sample)
+        random.shuffle(sequence_set)
+        self.samples = sequence_set
+
+    def __getitem__(self, index):
+        sample = self.samples[index]
+        tgt_img = load_as_float(sample['tgt'])
+        ref_imgs = [load_as_float(ref_img) for ref_img in sample['ref_imgs']]
+        flows = [load_as_float(flow) for flow in sample['flows']]
+        if self.transform is not None:
+            imgs, intrinsics = self.transform([tgt_img] + ref_imgs, np.copy(sample['intrinsics']))
+            tgt_img = imgs[0]
+            ref_imgs = imgs[1:]
+        else:
+            intrinsics = np.copy(sample['intrinsics'])
+        return tgt_img, ref_imgs, intrinsics, np.linalg.inv(intrinsics)
+
+    def __len__(self):
+        return len(self.samples)
