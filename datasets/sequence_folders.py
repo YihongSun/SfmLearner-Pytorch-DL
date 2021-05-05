@@ -6,7 +6,10 @@ import random
 
 
 def load_as_float(path):
-    return imread(path).astype(np.float32)
+    try:
+        return imread(path).astype(np.float32)
+    except:
+        return np.load(path).astype(np.float32)
 
 
 class SequenceFolder(data.Dataset):
@@ -124,7 +127,7 @@ class SequenceFolderFlow(data.Dataset):
             ref_imgs = imgs[1:]
         else:
             intrinsics = np.copy(sample['intrinsics'])
-        return tgt_img, ref_imgs, intrinsics, np.linalg.inv(intrinsics)
+        return tgt_img, ref_imgs, intrinsics, np.linalg.inv(intrinsics), flows
 
     def __len__(self):
         return len(self.samples)

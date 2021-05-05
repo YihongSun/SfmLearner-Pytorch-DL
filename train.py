@@ -11,7 +11,7 @@ import custom_transforms
 import models
 from utils import tensor2array, save_checkpoint, save_path_formatter, log_output_tensorboard
 
-from loss_functions import photometric_reconstruction_loss, explainability_loss, smooth_loss
+from loss_functions import photometric_reconstruction_loss, explainability_loss, smooth_loss, flow_consistency_loss, ground_prior_loss
 from loss_functions import compute_depth_errors, compute_pose_errors
 from inverse_warp import pose_vec2mat
 from logger import TermLogger, AverageMeter
@@ -69,6 +69,8 @@ parser.add_argument('--log-full', default='progress_log_full.csv', metavar='PATH
 parser.add_argument('-p', '--photo-loss-weight', type=float, help='weight for photometric loss', metavar='W', default=1)
 parser.add_argument('-m', '--mask-loss-weight', type=float, help='weight for explainabilty mask loss', metavar='W', default=0)
 parser.add_argument('-s', '--smooth-loss-weight', type=float, help='weight for disparity smoothness loss', metavar='W', default=0.1)
+parser.add_argument('--flow-loss-weight', type=float, help='weight for flow consistency loss', metavar='W', default=0.1)
+parser.add_argument('--prior-loss-weight', type=float, help='weight for ground surface prior loss', metavar='W', default=0.2)
 parser.add_argument('--log-output', action='store_true', help='will log dispnet outputs and warped imgs at validation step')
 parser.add_argument('-f', '--training-output-freq', type=int,
                     help='frequence for outputting dispnet outputs and warped imgs at training for all scales. '
@@ -144,13 +146,24 @@ def main():
                 transform=valid_transform
             )
     else:
-        val_set = SequenceFolder(
-            args.data,
-            transform=valid_transform,
-            seed=args.seed,
-            train=False,
-            sequence_length=args.sequence_length,
-        )
+        if args.flow_data == None:
+            val_set = SequenceFolder(
+                args.data,
+                transform=valid_transform,
+                seed=args.seed,
+                train=False,
+                sequence_length=args.sequence_length,
+            )
+        else:
+            val_set = SequenceFolderFlow(
+                args.data,
+                args.flow_data,
+                transform=valid_transform,
+                seed=args.seed,
+                train=False,
+                sequence_length=args.sequence_length,
+            )
+        
     print('{} samples found in {} train scenes'.format(len(train_set), len(train_set.scenes)))
     print('{} samples found in {} valid scenes'.format(len(val_set), len(val_set.scenes)))
     train_loader = torch.utils.data.DataLoader(
@@ -272,10 +285,11 @@ def main():
 
 def train(args, train_loader, disp_net, pose_exp_net, optimizer, epoch_size, logger, tb_writer):
     global n_iter, device
+    mse_l = torch.nn.MSELoss(reduction='mean')
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter(precision=4)
-    w1, w2, w3 = args.photo_loss_weight, args.mask_loss_weight, args.smooth_loss_weight
+    w1, w2, w3, wf, wp = args.photo_loss_weight, args.mask_loss_weight, args.smooth_loss_weight, args.flow_loss_weight, args.prior_loss_weight
 
     # switch to train mode
     disp_net.train()
@@ -284,7 +298,7 @@ def train(args, train_loader, disp_net, pose_exp_net, optimizer, epoch_size, log
     end = time.time()
     logger.train_bar.update(0)
 
-    for i, (tgt_img, ref_imgs, intrinsics, intrinsics_inv) in enumerate(train_loader):
+    for i, (tgt_img, ref_imgs, intrinsics, intrinsics_inv, flow_maps) in enumerate(train_loader):
         log_losses = i > 0 and n_iter % args.print_freq == 0
         log_output = args.training_output_freq > 0 and n_iter % args.training_output_freq == 0
 
@@ -292,6 +306,7 @@ def train(args, train_loader, disp_net, pose_exp_net, optimizer, epoch_size, log
         data_time.update(time.time() - end)
         tgt_img = tgt_img.to(device)
         ref_imgs = [img.to(device) for img in ref_imgs]
+        flow_maps = [flow_map.to(device) for flow_map in flow_maps]
         intrinsics = intrinsics.to(device)
 
         # compute output
@@ -299,16 +314,27 @@ def train(args, train_loader, disp_net, pose_exp_net, optimizer, epoch_size, log
         depth = [1/disp for disp in disparities]
         explainability_mask, pose = pose_exp_net(tgt_img, ref_imgs)
 
-        loss_1, warped, diff = photometric_reconstruction_loss(tgt_img, ref_imgs, intrinsics,
-                                                               depth, explainability_mask, pose,
+        loss_1, warped, diff, grid = photometric_reconstruction_loss(tgt_img, ref_imgs, intrinsics,
+                                                               depth, explainability_mask, pose, 
                                                                args.rotation_mode, args.padding_mode)
+        if wf > 0:
+            loss_f = flow_consistency_loss(grid, flow_maps, mse_l)
+        else:
+            loss_f = 0
+        
+        if wp > 0:
+            loss_p = ground_prior_loss(disparities)
+        else:
+            loss_p = 0
+
         if w2 > 0:
             loss_2 = explainability_loss(explainability_mask)
         else:
             loss_2 = 0
+        
         loss_3 = smooth_loss(depth)
 
-        loss = w1*loss_1 + w2*loss_2 + w3*loss_3
+        loss = w1*loss_1 + w2*loss_2 + w3*loss_3 + wf*loss_f + wp*loss_p
 
         if log_losses:
             tb_writer.add_scalar('photometric_error', loss_1.item(), n_iter)
@@ -351,12 +377,13 @@ def train(args, train_loader, disp_net, pose_exp_net, optimizer, epoch_size, log
 @torch.no_grad()
 def validate_without_gt(args, val_loader, disp_net, pose_exp_net, epoch, logger, tb_writer, sample_nb_to_log=3):
     global device
+    mse_l = torch.nn.MSELoss(reduction='mean')
     batch_time = AverageMeter()
     losses = AverageMeter(i=3, precision=4)
     log_outputs = sample_nb_to_log > 0
     # Output the logs throughout the whole dataset
     batches_to_log = list(np.linspace(0, len(val_loader), sample_nb_to_log).astype(int))
-    w1, w2, w3 = args.photo_loss_weight, args.mask_loss_weight, args.smooth_loss_weight
+    w1, w2, w3, wf, wp = args.photo_loss_weight, args.mask_loss_weight, args.smooth_loss_weight, args.flow_loss_weight, args.prior_loss_weight
     poses = np.zeros(((len(val_loader)-1) * args.batch_size * (args.sequence_length-1), 6))
     disp_values = np.zeros(((len(val_loader)-1) * args.batch_size * 3))
 
@@ -366,22 +393,34 @@ def validate_without_gt(args, val_loader, disp_net, pose_exp_net, epoch, logger,
 
     end = time.time()
     logger.valid_bar.update(0)
-    for i, (tgt_img, ref_imgs, intrinsics, intrinsics_inv) in enumerate(val_loader):
+    for i, (tgt_img, ref_imgs, intrinsics, intrinsics_inv, flow_maps) in enumerate(val_loader):
         tgt_img = tgt_img.to(device)
         ref_imgs = [img.to(device) for img in ref_imgs]
         intrinsics = intrinsics.to(device)
         intrinsics_inv = intrinsics_inv.to(device)
+        flow_maps = [flow_map.to(device) for flow_map in flow_maps]
 
         # compute output
         disp = disp_net(tgt_img)
         depth = 1/disp
         explainability_mask, pose = pose_exp_net(tgt_img, ref_imgs)
 
-        loss_1, warped, diff = photometric_reconstruction_loss(tgt_img, ref_imgs,
+        loss_1, warped, diff, grid = photometric_reconstruction_loss(tgt_img, ref_imgs,
                                                                intrinsics, depth,
                                                                explainability_mask, pose,
                                                                args.rotation_mode, args.padding_mode)
         loss_1 = loss_1.item()
+
+        if wf > 0:
+            loss_f = flow_consistency_loss(grid, flow_maps, mse_l)
+        else:
+            loss_f = 0
+        
+        if wp > 0:
+            loss_p = ground_prior_loss(disp)
+        else:
+            loss_p = 0
+
         if w2 > 0:
             loss_2 = explainability_loss(explainability_mask).item()
         else:
@@ -406,7 +445,7 @@ def validate_without_gt(args, val_loader, disp_net, pose_exp_net, epoch, logger,
                                                             disp_unraveled.median(-1)[0],
                                                             disp_unraveled.max(-1)[0]]).numpy()
 
-        loss = w1*loss_1 + w2*loss_2 + w3*loss_3
+        loss = w1*loss_1 + w2*loss_2 + w3*loss_3 + wf*loss_f + wp*loss_p
         losses.update([loss, loss_1, loss_2])
 
         # measure elapsed time

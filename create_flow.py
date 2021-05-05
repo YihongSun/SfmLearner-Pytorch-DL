@@ -21,18 +21,18 @@ def get_flow(prev, cur, norm=True):
 
 time1 = time.time()
 
-data_dir = 'kitti_mod/'
+data_dir = '../data/kitti_mod/'
 
 SIZE_H, SIZE_W = 128, 416
 
-with open(data_dir + 'train.txt', 'r') as fh:
+with open(data_dir + 'val.txt', 'r') as fh:
     folder_list = [i.strip() for i in fh]
 
 M = len(folder_list)
 
 for m in range(M):
     folder = folder_list[m]
-    save_dir = 'flow_' + data_dir + folder + '/'
+    save_dir = '../data/flow_kitti_mod/' + folder + '/'
     if not os.path.exists(save_dir):
         os.mkdir(save_dir)
 
@@ -45,7 +45,7 @@ for m in range(M):
     for i in range(1, N):
         img2 = cv2.resize(cv2.imread(data_dir + folder + '/' + images[i]), (SIZE_W, SIZE_H), interpolation=cv2.INTER_AREA)
 
-        # np.save(save_dir + images[i-1][:-4] + '.npy', get_flow(img1, img2))
+        np.save(save_dir + images[i-1][:-4] + '.npy', get_flow(img1, img2))
         np.save(save_dir + images[i][:-4] + '_r.npy', get_flow(img2, img1))
 
         img1 = img2

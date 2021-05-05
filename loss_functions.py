@@ -3,7 +3,9 @@ import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
-from inverse_warp import inverse_warp
+from inverse_warp import inverse_warp_w_grid
+import cv2
+import skimage.io as io
 
 
 def photometric_reconstruction_loss(tgt_img, ref_imgs, intrinsics,
@@ -16,21 +18,36 @@ def photometric_reconstruction_loss(tgt_img, ref_imgs, intrinsics,
         reconstruction_loss = 0
         b, _, h, w = depth.size()
         downscale = tgt_img.size(2)/h
-
         tgt_img_scaled = F.interpolate(tgt_img, (h, w), mode='area')
         ref_imgs_scaled = [F.interpolate(ref_img, (h, w), mode='area') for ref_img in ref_imgs]
         intrinsics_scaled = torch.cat((intrinsics[:, 0:2]/downscale, intrinsics[:, 2:]), dim=1)
 
         warped_imgs = []
         diff_maps = []
+        grid = []
+
+        # tgt = tgt_img_scaled.cpu().detach().numpy().transpose((0, 2, 3, 1))
+        # for a in range(tgt.shape[0]):
+        #     io.imsave('tmp_tgt_{}.png'.format(a), ((tgt[a] * 0.5 + 0.5) * 255).astype(np.uint8))
+        
 
         for i, ref_img in enumerate(ref_imgs_scaled):
+
+            # ref = ref_img.cpu().detach().numpy().transpose((0, 2, 3, 1))
+            # for a in range(tgt.shape[0]):
+            #     io.imsave('tmp_ref_{}_{}.png'.format(a, i), ((ref[a] * 0.5 + 0.5) * 255).astype(np.uint8))
+
             current_pose = pose[:, i]
 
-            ref_img_warped, valid_points = inverse_warp(ref_img, depth[:,0], current_pose,
+            ref_img_warped, valid_points, src_pixel_coords = inverse_warp_w_grid(ref_img, depth[:,0], current_pose,
                                                         intrinsics_scaled,
                                                         rotation_mode, padding_mode)
             diff = (tgt_img_scaled - ref_img_warped) * valid_points.unsqueeze(1).float()
+
+            warp = ref_img_warped.cpu().detach().numpy().transpose((0, 2, 3, 1))
+            
+            # for a in range(warp.shape[0]):
+            #     io.imsave('tmp_warp_{}_{}.png'.format(a, i), ((warp[a] * 0.5 + 0.5) * 255).astype(np.uint8))
 
             if explainability_mask is not None:
                 diff = diff * explainability_mask[:,i:i+1].expand_as(diff)
@@ -40,10 +57,12 @@ def photometric_reconstruction_loss(tgt_img, ref_imgs, intrinsics,
 
             warped_imgs.append(ref_img_warped[0])
             diff_maps.append(diff[0])
+            grid.append(src_pixel_coords)
+        
 
-        return reconstruction_loss, warped_imgs, diff_maps
+        return reconstruction_loss, warped_imgs, diff_maps, grid
 
-    warped_results, diff_results = [], []
+    warped_results, diff_results, gird_results = [], [], []
     if type(explainability_mask) not in [tuple, list]:
         explainability_mask = [explainability_mask]
     if type(depth) not in [list, tuple]:
@@ -51,12 +70,13 @@ def photometric_reconstruction_loss(tgt_img, ref_imgs, intrinsics,
 
     total_loss = 0
     for d, mask in zip(depth, explainability_mask):
-        loss, warped, diff = one_scale(d, mask)
+        loss, warped, diff, grid = one_scale(d, mask)
         total_loss += loss
         warped_results.append(warped)
         diff_results.append(diff)
-    assert False
-    return total_loss, warped_results, diff_results
+        gird_results.append(grid)
+
+    return total_loss, warped_results, diff_results, gird_results
 
 
 def explainability_loss(mask):
@@ -88,6 +108,41 @@ def smooth_loss(pred_map):
         loss += (dx2.abs().mean() + dxdy.abs().mean() + dydx.abs().mean() + dy2.abs().mean())*weight
         weight /= 2.3  # don't ask me why it works better
     return loss
+
+
+def flow_consistency_loss(grids, flows, criterion):
+    num_scales = len(grids)
+    num_ref = len(flows)
+
+    loss = 0
+    count = 0
+    for i in range(num_scales):
+        grid = grids[i]
+        b, h, w, _ = grid[0].shape
+        flow_scaled = [F.interpolate(flow.permute(0, 3, 1, 2), (h, w), mode='area').permute(0, 2, 3, 1) for flow in flows]
+        
+        for j in range(num_ref):
+            loss += criterion(grid[j], flow_scaled[j])
+            count += 1
+        #     diff = ((grid[j] - flow_scaled[j]) ** 2).sum(3)
+        #     print(diff.shape)
+
+        #     d = diff.cpu().detach().numpy()
+        #     for k in range(d.shape[0]):
+        #         cv2.imwrite('tmp_diff_{}_{}.png'.format(k, j), cv2.normalize(d[k], None, 0, 255, cv2.NORM_MINMAX))
+
+    return loss / count
+
+def ground_prior_loss(disp_map, ground_frac=0.3, disp_threshold=0.4, scale=10):
+    loss = 0
+    for disp in disp_map:
+        h, w = disp.shape[-2:]
+        diff = torch.max(disp_threshold - disp / scale, torch.zeros(disp.shape).cuda())
+        loss += torch.mean(diff[..., -int(h*ground_frac):, :])
+    #     print(disp.max(), disp.min(), disp.mean(), disp.median())
+    # assert False
+    return loss / len(disp_map)
+
 
 
 @torch.no_grad()
