@@ -18,7 +18,7 @@ See the [project webpage](https://people.eecs.berkeley.edu/~tinghuiz/projects/Sf
 Original Author : Tinghui Zhou (tinghuiz@berkeley.edu)
 Pytorch implementation : Clément Pinard (clement.pinard@ensta-paristech.fr)
 
-![sample_results](misc/cityscapes_sample_results.gif)
+![sample_results](misc/kitti.gif)
 
 
 ## Preamble
