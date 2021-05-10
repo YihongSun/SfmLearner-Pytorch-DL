@@ -1,5 +1,11 @@
-# SfMLearner Pytorch version
-This codebase implements the system described in the paper:
+# CS.601.482 Deep Learning Final Project
+
+### Unsupervised Monocular Depth Estimation with Optical Flow Consistency and Proximal Ground Prior
+### Kavan Bansal,  Jessica Su,  Yihong Sun,  Ashley Tsang
+
+---
+
+This codebase is forked and extended from a [PyTorch implementation](https://github.com/ClementPinard/SfmLearner-Pytorch) of the system described in the paper:
 
 Unsupervised Learning of Depth and Ego-Motion from Video
 
@@ -13,6 +19,7 @@ Original Author : Tinghui Zhou (tinghuiz@berkeley.edu)
 Pytorch implementation : Clément Pinard (clement.pinard@ensta-paristech.fr)
 
 ![sample_results](misc/cityscapes_sample_results.gif)
+
 
 ## Preamble
 This codebase was developed and tested with Pytorch 1.0.1, CUDA 10 and Ubuntu 16.04. Original code was developped in tensorflow, you can access it [here](https://github.com/tinghuiz/SfMLearner)
@@ -37,27 +44,6 @@ blessings
 progressbar2
 path.py
 ```
-
-### Note
-Because it uses latests pytorch features, it is not compatible with anterior versions of pytorch.
-
-If you don't have an up to date pytorch, the tags can help you checkout the right commits corresponding to your pytorch version.
-
-### What has been done
-
-* Training has been tested on KITTI and CityScapes.
-* Dataset preparation has been largely improved, and now stores image sequences in folders, making sure that movement is each time big enough between each frame
-* That way, training is now significantly faster, running at ~0.14sec per step vs ~0.2s per steps initially (on a single GTX980Ti)
-* In addition you don't need to prepare data for a particular sequence length anymore as stacking is made on the fly.
-* You can still choose the former stacked frames dataset format.
-* Convergence is now almost as good as original paper with same hyper parameters
-* You can know compare with groud truth for your validation set. It is still possible to validate without, but you now can see that minimizing photometric error is not equivalent to optimizing depth map.
-
-### Differences with official Implementation
-
-* Smooth Loss is different from official repo. Instead of applying it to disparity, we apply it to depth. Original disparity smooth loss did not work well (don't know why !) and it did not even converge at all with weight values used (0.5).
-* loss is divided by `2.3` when downscaling instead of `2`. This is the results of empiric experiments, so the optimal value is clearly not carefully determined.
-* As a consequence, with a smooth loss of `2.0̀`, depth test is better, but Pose test is worse. To revert smooth loss back to original, you can change it [here](train.py#L270)
 
 ## Preparing training data
 Preparation is roughly the same command as in the original code.
@@ -106,48 +92,15 @@ Pose evaluation is also available on [Odometry dataset](http://www.cvlibs.net/da
 python3 test_pose.py /path/to/posenet --dataset-dir /path/to/KITIT_odometry --sequences [09]
 ```
 
-**ATE** (*Absolute Trajectory Error*) is computed as long as **RE** for rotation (*Rotation Error*). **RE** between `R1` and `R2` is defined as the angle of `R1*R2^-1` when converted to axis/angle. It corresponds to `RE = arccos( (trace(R1 @ R2^-1) - 1) / 2)`.
-While **ATE** is often said to be enough to trajectory estimation, **RE** seems important here as sequences are only `seq_length` frames long.
-
-## Pretrained Nets
-
-[Avalaible here](https://drive.google.com/drive/folders/1H1AFqSS8wr_YzwG2xWwAQHTfXN5Moxmx)
-
-Arguments used :
-
-```bash
-python3 train.py /path/to/the/formatted/data/ -b4 -m0 -s2.0 --epoch-size 1000 --sequence-length 5 --log-output --with-gt
-```
 
 ### Depth Results
 
 | Abs Rel | Sq Rel | RMSE  | RMSE(log) | Acc.1 | Acc.2 | Acc.3 |
 |---------|--------|-------|-----------|-------|-------|-------|
-| 0.181   | 1.341  | 6.236 | 0.262     | 0.733 | 0.901 | 0.964 | 
-
-### Pose Results
-
-5-frames snippets used
-
-|    | Seq. 09              | Seq. 10              |
-|----|----------------------|----------------------|
-|ATE | 0.0179 (std. 0.0110) | 0.0141 (std. 0.0115) |
-|RE  | 0.0018 (std. 0.0009) | 0.0018 (std. 0.0011) | 
+| 0.184   | 1.394  | 6.363 | 0.264     | 0.726 | 0.903 | 0.964 | 
 
 
-## Discussion
+## Original Implementations
 
-Here I try to link the issues that I think raised interesting questions about scale factor, pose inference, and training hyperparameters
-
- - [Issue 48](https://github.com/ClementPinard/SfmLearner-Pytorch/issues/48) : Why is target frame at the center of the sequence ?
- - [Issue 39](https://github.com/ClementPinard/SfmLearner-Pytorch/issues/39) : Getting pose vector without the scale factor uncertainty
- - [Issue 46](https://github.com/ClementPinard/SfmLearner-Pytorch/issues/46) : Is Interpolated groundtruth better than sparse groundtruth ?
- - [Issue 45](https://github.com/ClementPinard/SfmLearner-Pytorch/issues/45) : How come the inverse warp is absolute and pose and depth are only relative ?
- - [Issue 32](https://github.com/ClementPinard/SfmLearner-Pytorch/issues/32) : Discussion about validation set, and optimal batch size
- - [Issue 25](https://github.com/ClementPinard/SfmLearner-Pytorch/issues/25) : Why filter out static frames ?
- - [Issue 24](https://github.com/ClementPinard/SfmLearner-Pytorch/issues/24) : Filtering pixels out of the photometric loss
- - [Issue 60](https://github.com/ClementPinard/SfmLearner-Pytorch/issues/60) : Inverse warp is only one way !
-
-## Other Implementations
-
-[TensorFlow](https://github.com/tinghuiz/SfMLearner) by tinghuiz (original code, and paper author)
+[TensorFlow](https://github.com/tinghuiz/SfMLearner) by tinghuiz (original code, and paper author)  
+[PyTorch](https://github.com/ClementPinard/SfmLearner-Pytorch) by ClementPinard
